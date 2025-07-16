@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Trace Solidity call chains with source snippets.
 
-Usage:
-    python tracer.py <Contract::func> <files...>
+This script calls Surya to obtain a call graph starting from a given
+`CONTRACT::FUNCTION` and prints each function in the chain together with the
+Solidity source code.
 
-Requires `surya` to be installed and available in PATH.
+Example:
+    python tracer.py Token::withdraw examples/contracts/*.sol
+
+Surya must be installed and available in ``PATH``.
 """
 import argparse
 import re
@@ -79,9 +83,31 @@ def extract_snippet(src: str, func: str) -> Optional[str]:
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('entry', help='Entry point CONTRACT::FUNCTION')
-    ap.add_argument('files', nargs='+', help='Solidity sources')
+    description = (
+        "Print the call chain for a Solidity function and show the source "
+        "snippet for each function in that chain. Surya is used to "
+        "generate the call graph."
+    )
+    epilog = (
+        "Example:\n"
+        "  python tracer.py Token::withdraw examples/contracts/*.sol"
+    )
+    ap = argparse.ArgumentParser(
+        description=description,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        'entry',
+        metavar='CONTRACT::FUNCTION',
+        help='Entry point to start tracing',
+    )
+    ap.add_argument(
+        'files',
+        nargs='+',
+        metavar='files',
+        help='Solidity source files',
+    )
     args = ap.parse_args()
 
     for bin_ in ('surya',):
