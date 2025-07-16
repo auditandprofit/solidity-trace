@@ -27,9 +27,10 @@ def run(cmd):
 def parse_ftrace(text):
     ansi = re.compile(r"\x1b\[[0-9;]*m")
     functions = []
+    tree_prefix = re.compile(r'^[\s│├└─]+')
     for line in text.splitlines():
         line = ansi.sub('', line)
-        line = line.lstrip('│ ').lstrip('└─').strip()
+        line = tree_prefix.sub('', line)
         if not line:
             continue
         if '::' not in line:
