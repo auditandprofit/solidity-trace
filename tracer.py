@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 
 def run(cmd):
@@ -34,7 +35,7 @@ def parse_ftrace(text):
     return functions
 
 
-def extract_snippet(src: str, func: str) -> str | None:
+def extract_snippet(src: str, func: str) -> Optional[str]:
     """Return the Solidity code for `func` from `src`.
 
     This performs a very small amount of parsing by locating the contract
