@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable, Dict, List, Set
 
 
 def run(cmd):
@@ -75,6 +75,23 @@ def parse_contract_vars(body: str, contract_names) -> dict:
     return vars_
 
 
+def parse_contract_usings(body: str, library_names: Iterable[str]) -> Set[str]:
+    """Return libraries imported with `using <Lib> for` in this contract."""
+    if not library_names:
+        return set()
+    pat = re.compile(
+        r"using\s+(" + "|".join(map(re.escape, library_names)) + r")\s+for\s+[^;]+;"
+    )
+    libs = set(m.group(1) for m in pat.finditer(body))
+    return libs
+
+
+def parse_library_funcs(body: str) -> List[str]:
+    """Return the public function names defined in a library body."""
+    pat = re.compile(r"function\s+(\w+)\b")
+    return pat.findall(body)
+
+
 def find_cross_calls(snippet: str, var_map: dict) -> list[str]:
     """Find calls made through contract variables."""
     if not var_map:
@@ -85,6 +102,20 @@ def find_cross_calls(snippet: str, var_map: dict) -> list[str]:
     for m in call_pat.finditer(snippet):
         var, func = m.groups()
         calls.append(f"{var_map[var]}::{func}")
+    return calls
+
+
+def find_using_calls(snippet: str, libs: Iterable[str], lib_funcs: Dict[str, List[str]]) -> List[str]:
+    """Find library function calls enabled via `using` statements."""
+    calls = []
+    for lib in libs:
+        funcs = lib_funcs.get(lib)
+        if not funcs:
+            continue
+        pat = re.compile(r"\.(" + "|".join(map(re.escape, funcs)) + r")\s*(?:\{|\()")
+        for m in pat.finditer(snippet):
+            fname = m.group(1)
+            calls.append(f"{lib}::{fname}")
     return calls
 
 
@@ -168,16 +199,28 @@ def main():
         flat.write_text(run(['surya', 'flatten', *args.files]))
         src_text = flat.read_text()
 
-        # gather contract names
-        contract_names = re.findall(r"(?:contract|library)\s+(\w+)", src_text)
+        # gather contract and library names separately
+        contract_names = re.findall(r"\bcontract\s+(\w+)", src_text)
+        library_names = re.findall(r"\blibrary\s+(\w+)", src_text)
+        all_names = contract_names + library_names
 
-        # map of contract to variable->type
-        contract_vars = {}
+        # map of contract to variable->type and used libraries
+        contract_vars: Dict[str, Dict[str, str]] = {}
+        contract_usings: Dict[str, Set[str]] = {}
         for cname in contract_names:
             body = extract_contract_body(src_text, cname)
             if body is None:
                 continue
-            contract_vars[cname] = parse_contract_vars(body, contract_names)
+            contract_vars[cname] = parse_contract_vars(body, all_names)
+            contract_usings[cname] = parse_contract_usings(body, library_names)
+
+        # library function lists
+        library_funcs: Dict[str, List[str]] = {}
+        for lname in library_names:
+            body = extract_contract_body(src_text, lname)
+            if body is None:
+                continue
+            library_funcs[lname] = parse_library_funcs(body)
 
         visited = set()
         stack = [args.entry]
@@ -204,6 +247,11 @@ def main():
             contract, _ = func.split('::', 1)
             vars_map = contract_vars.get(contract, {})
             for call in find_cross_calls(snippet, vars_map):
+                if call not in visited:
+                    stack.append(call)
+
+            libs = contract_usings.get(contract, set())
+            for call in find_using_calls(snippet, libs, library_funcs):
                 if call not in visited:
                     stack.append(call)
 
