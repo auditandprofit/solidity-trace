@@ -40,6 +40,54 @@ def parse_ftrace(text):
     return functions
 
 
+def extract_contract_body(src: str, contract: str) -> Optional[str]:
+    """Return the full body of a contract or library."""
+    c_pat = re.compile(
+        r"(contract|library)\s+" + re.escape(contract) + r"\b[^\{]*\{",
+        re.MULTILINE,
+    )
+    m_contract = c_pat.search(src)
+    if not m_contract:
+        return None
+    c_start = m_contract.end()
+    idx = c_start
+    depth = 1
+    while idx < len(src) and depth > 0:
+        if src[idx] == '{':
+            depth += 1
+        elif src[idx] == '}':
+            depth -= 1
+        idx += 1
+    return src[c_start : idx - 1]
+
+
+def parse_contract_vars(body: str, contract_names) -> dict:
+    """Find state variables that reference known contracts."""
+    if not contract_names:
+        return {}
+    pat = re.compile(
+        r"\b(" + "|".join(map(re.escape, contract_names)) + r")\s+(?:[\w\s]+?\s)?(\w+)\s*(?:;|=)",
+    )
+    vars_ = {}
+    for m in pat.finditer(body):
+        ctype, name = m.groups()
+        vars_[name] = ctype
+    return vars_
+
+
+def find_cross_calls(snippet: str, var_map: dict) -> list[str]:
+    """Find calls made through contract variables."""
+    if not var_map:
+        return []
+    names = "|".join(map(re.escape, var_map.keys()))
+    call_pat = re.compile(r"\b(" + names + r")\.(\w+)\s*(?:\{|\()")
+    calls = []
+    for m in call_pat.finditer(snippet):
+        var, func = m.groups()
+        calls.append(f"{var_map[var]}::{func}")
+    return calls
+
+
 def extract_snippet(src: str, func: str) -> Optional[str]:
     """Return the Solidity code for `func` from `src`.
 
@@ -118,10 +166,46 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         flat = Path(tmp, 'flat.sol')
         flat.write_text(run(['surya', 'flatten', *args.files]))
-        trace = run(['surya', 'ftrace', args.entry, 'all', *args.files])
-
         src_text = flat.read_text()
-        funcs = parse_ftrace(trace)
+
+        # gather contract names
+        contract_names = re.findall(r"(?:contract|library)\s+(\w+)", src_text)
+
+        # map of contract to variable->type
+        contract_vars = {}
+        for cname in contract_names:
+            body = extract_contract_body(src_text, cname)
+            if body is None:
+                continue
+            contract_vars[cname] = parse_contract_vars(body, contract_names)
+
+        visited = set()
+        stack = [args.entry]
+        funcs = []
+
+        while stack:
+            func = stack.pop()
+            if func in visited:
+                continue
+            visited.add(func)
+            funcs.append(func)
+
+            try:
+                trace = run(['surya', 'ftrace', func, 'all', *args.files])
+            except subprocess.CalledProcessError:
+                trace = ''
+            for f in parse_ftrace(trace):
+                if f not in visited:
+                    stack.append(f)
+
+            snippet = extract_snippet(src_text, func)
+            if not snippet:
+                continue
+            contract, _ = func.split('::', 1)
+            vars_map = contract_vars.get(contract, {})
+            for call in find_cross_calls(snippet, vars_map):
+                if call not in visited:
+                    stack.append(call)
 
         print(f"\n== Call Trace for {args.entry} ==\n")
         for f in funcs:
