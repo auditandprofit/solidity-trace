@@ -29,4 +29,6 @@ python tracer.py Token::withdraw examples/contracts/*.sol
 ```
 
 The script prints the chain of calls starting from the given entry point and
-shows the source for each function that it encounters.
+shows the source for each function that it encounters. Calls added through
+`using` library directives are also followed, so library functions invoked as
+extensions of built-in types will appear in the trace.
