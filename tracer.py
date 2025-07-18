@@ -17,13 +17,40 @@ import subprocess
 import tempfile
 from pathlib import Path
 from collections import defaultdict
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Iterable, Set
 import re
 
 
 def run(cmd):
     res = subprocess.run(cmd, check=True, text=True, capture_output=True)
     return res.stdout
+
+
+def build_reverse(edges: Iterable[Tuple[str, str]]) -> Dict[str, List[str]]:
+    """Return adjacency map from callee to list of callers."""
+    rev: Dict[str, List[str]] = defaultdict(list)
+    for u, v in edges:
+        rev[v].append(u)
+    return rev
+
+
+def rev_paths(sink: str, rev: Dict[str, List[str]], entry_pred) -> Iterable[List[str]]:
+    """Yield all entry-to-sink paths using DFS on the reverse graph."""
+    stack: List[Tuple[str, List[str]]] = [(sink, [sink])]
+    seen: Set[Tuple[str, ...]] = set()
+    while stack:
+        node, path = stack.pop()
+        preds = rev.get(node, [])
+        if not preds or entry_pred(node):
+            tup = tuple(reversed(path))
+            if tup not in seen:
+                seen.add(tup)
+                yield list(tup)
+            continue
+        for p in preds:
+            if p in path:
+                continue
+            stack.append((p, path + [p]))
 
 
 
@@ -122,6 +149,7 @@ def main():
     )
     ap.add_argument(
         'entry',
+        nargs='?',
         metavar='CONTRACT::FUNCTION',
         help='Entry point to start tracing',
     )
@@ -136,7 +164,17 @@ def main():
         action='store_true',
         help='Do not detect or print value transfer sinks',
     )
+    ap.add_argument(
+        '--from-sink',
+        metavar='SINK_ID',
+        help='Trace backwards from value sink identifier',
+    )
     args = ap.parse_args()
+
+    if args.from_sink and args.entry:
+        ap.error('entry cannot be used with --from-sink')
+    if not args.from_sink and not args.entry:
+        ap.error('CONTRACT::FUNCTION or --from-sink is required')
 
     for bin_ in ('surya',):
         if not shutil.which(bin_):
@@ -163,29 +201,60 @@ def main():
         if not args.no_sinks:
             sink_index = collect_sinks(src_text, offsets)
 
+        target = args.entry if args.entry else 'all'
         trace = json.loads(
-            run(['surya', 'ftrace', '--json', args.entry, 'all', str(flat)])
+            run(['surya', 'ftrace', '--json', target, 'all', str(flat)])
         )
-        funcs = trace['trace']
 
-        print(f"\n== Call Trace for {args.entry} ==\n")
-        for f in funcs:
-            res = extract_snippet(src_text, f, offsets)
-            print(f'### {f}')
-            if res:
-                snippet, line_no = res
-                print(f'// L{line_no}\n{snippet}')
-            else:
-                print('[source not found]')
+        if args.from_sink:
+            if args.from_sink not in offsets:
+                raise SystemExit(f'sink {args.from_sink} not found')
+            rev = build_reverse(trace.get('edges', []))
 
-            if not args.no_sinks:
-                for skey in sink_index.get(f, []):
-                    sres = extract_snippet(src_text, skey, offsets)
-                    if sres:
-                        ssnip, sline = sres
-                        print("### \ud83d\udd3b ValueTx sink in " + f)
-                        print(f"// L{sline}\n{ssnip}")
-            print()
+            def is_entry(fn: str) -> bool:
+                return fn.count('::') == 1 or fn not in rev
+
+            print(f"\n== Reverse Trace from {args.from_sink} ==\n")
+            for path in rev_paths(args.from_sink, rev, is_entry):
+                for f in path:
+                    res = extract_snippet(src_text, f, offsets)
+                    print(f'### {f}')
+                    if res:
+                        snippet, line_no = res
+                        print(f'// L{line_no}\n{snippet}')
+                    else:
+                        print('[source not found]')
+
+                    if not args.no_sinks and f in sink_index:
+                        for skey in sink_index.get(f, []):
+                            sres = extract_snippet(src_text, skey, offsets)
+                            if sres:
+                                ssnip, sline = sres
+                                print("### \ud83d\udd3b ValueTx sink in " + f)
+                                print(f"// L{sline}\n{ssnip}")
+                    print()
+                print('----')
+        else:
+            funcs = trace['trace']
+
+            print(f"\n== Call Trace for {args.entry} ==\n")
+            for f in funcs:
+                res = extract_snippet(src_text, f, offsets)
+                print(f'### {f}')
+                if res:
+                    snippet, line_no = res
+                    print(f'// L{line_no}\n{snippet}')
+                else:
+                    print('[source not found]')
+
+                if not args.no_sinks:
+                    for skey in sink_index.get(f, []):
+                        sres = extract_snippet(src_text, skey, offsets)
+                        if sres:
+                            ssnip, sline = sres
+                            print("### \ud83d\udd3b ValueTx sink in " + f)
+                            print(f"// L{sline}\n{ssnip}")
+                print()
 
 if __name__ == '__main__':
     main()

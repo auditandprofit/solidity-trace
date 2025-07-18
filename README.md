@@ -33,6 +33,15 @@ shows the source for each function that it encounters. Calls added through
 `using` library directives are also followed, so library functions invoked as
 extensions of built-in types will appear in the trace.
 
+To inspect the callers leading to a particular value transfer sink instead,
+use the `--from-sink` flag with the sink identifier printed by a regular run:
+
+```bash
+python tracer.py --from-sink Token::_transfer::SINK::transfer::0 examples/contracts/*.sol
+```
+
+Each reverse trace prints all possible entry points that can reach the sink.
+
 By default the trace also highlights low level calls and value transfer
 sinks (e.g. `transfer`, `selfdestruct`, `call{value: ...}`). Use the
 `--no-sinks` flag to suppress this extra information if a compact output
