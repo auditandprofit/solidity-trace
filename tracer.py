@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Trace Solidity call chains with source snippets.
 
-This script calls Surya to obtain a call graph starting from a given
-`CONTRACT::FUNCTION` and prints each function in the chain together with the
-Solidity source code.
+This script uses Surya's `ftrace` command to obtain a call trace starting
+from a given `CONTRACT::FUNCTION` and prints each function in the chain
+together with the Solidity source code.
 
 Example:
     python tracer.py Token::withdraw examples/contracts/*.sol
@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Iterable, Dict, List, Set
+from typing import Optional, Dict
 
 
 def run(cmd):
@@ -55,62 +55,14 @@ def extract_contract_body(src: str, contract: str, offsets: dict) -> Optional[st
     return snippet[first + 1:last]
 
 
-def parse_contract_vars(body: str, contract_names) -> dict:
-    """Find state variables that reference known contracts."""
-    if not contract_names:
-        return {}
-    pat = re.compile(
-        r"\b(" + "|".join(map(re.escape, contract_names)) + r")\s+(?:[\w\s]+?\s)?(\w+)\s*(?:;|=)",
-    )
-    vars_ = {}
-    for m in pat.finditer(body):
-        ctype, name = m.groups()
-        vars_[name] = ctype
-    return vars_
 
 
-def parse_contract_usings(body: str, library_names: Iterable[str]) -> Set[str]:
-    """Return libraries imported with `using <Lib> for` in this contract."""
-    if not library_names:
-        return set()
-    pat = re.compile(
-        r"using\s+(" + "|".join(map(re.escape, library_names)) + r")\s+for\s+[^;]+;"
-    )
-    libs = set(m.group(1) for m in pat.finditer(body))
-    return libs
 
 
-def parse_library_funcs(body: str) -> List[str]:
-    """Return the public function names defined in a library body."""
-    pat = re.compile(r"function\s+(\w+)\b")
-    return pat.findall(body)
 
 
-def find_cross_calls(snippet: str, var_map: dict) -> list[str]:
-    """Find calls made through contract variables."""
-    if not var_map:
-        return []
-    names = "|".join(map(re.escape, var_map.keys()))
-    call_pat = re.compile(r"\b(" + names + r")\.(\w+)\s*(?:\{|\()")
-    calls = []
-    for m in call_pat.finditer(snippet):
-        var, func = m.groups()
-        calls.append(f"{var_map[var]}::{func}")
-    return calls
 
 
-def find_using_calls(snippet: str, libs: Iterable[str], lib_funcs: Dict[str, List[str]]) -> List[str]:
-    """Find library function calls enabled via `using` statements."""
-    calls = []
-    for lib in libs:
-        funcs = lib_funcs.get(lib)
-        if not funcs:
-            continue
-        pat = re.compile(r"\.(" + "|".join(map(re.escape, funcs)) + r")\s*(?:\{|\()")
-        for m in pat.finditer(snippet):
-            fname = m.group(1)
-            calls.append(f"{lib}::{fname}")
-    return calls
 
 
 def extract_snippet(src: str, func: str, offsets: dict) -> Optional[str]:
@@ -125,8 +77,8 @@ def extract_snippet(src: str, func: str, offsets: dict) -> Optional[str]:
 def main():
     description = (
         "Print the call chain for a Solidity function and show the source "
-        "snippet for each function in that chain. Surya is used to "
-        "generate the call graph."
+        "snippet for each function in that chain. Surya's `ftrace` "
+        "command is used to generate the trace."
     )
     epilog = (
         "Example:\n"
@@ -171,66 +123,8 @@ def main():
                 fs, fl, _ = f['src'].split(':')
                 offsets[f"{c['name']}::{f['name']}"] = (fs, fl)
 
-        # gather contract and library names separately
-        contract_names = re.findall(r"\bcontract\s+(\w+)", src_text)
-        library_names = re.findall(r"\blibrary\s+(\w+)", src_text)
-        all_names = contract_names + library_names
-
-        # map of contract to variable->type and used libraries
-        contract_vars: Dict[str, Dict[str, str]] = {}
-        contract_usings: Dict[str, Set[str]] = {}
-        for cname in contract_names:
-            body = extract_contract_body(src_text, cname, offsets)
-            if body is None:
-                continue
-            contract_vars[cname] = parse_contract_vars(body, all_names)
-            contract_usings[cname] = parse_contract_usings(body, library_names)
-
-        # library function lists
-        library_funcs: Dict[str, List[str]] = {}
-        for lname in library_names:
-            body = extract_contract_body(src_text, lname, offsets)
-            if body is None:
-                continue
-            library_funcs[lname] = parse_library_funcs(body)
-
-        # build a map of caller->callees from a single Surya run
-        graph_json = json.loads(run(['surya', 'graph', '--json', str(flat)]))
-        edges: Dict[str, Set[str]] = {}
-        for edge in graph_json.get('calls', []):
-            caller = f"{edge['from']['contract']}::{edge['from']['name']}"
-            callee = f"{edge['to']['contract']}::{edge['to']['name']}"
-            edges.setdefault(caller, set()).add(callee)
-
-        visited = set()
-        stack = [args.entry]
-        funcs = []
-
-        while stack:
-            func = stack.pop()
-            if func in visited:
-                continue
-            visited.add(func)
-            funcs.append(func)
-
-            # follow Surya-derived call edges first
-            for nxt in edges.get(func, ()):
-                if nxt not in visited:
-                    stack.append(nxt)
-
-            snippet = extract_snippet(src_text, func, offsets)
-            if not snippet:
-                continue
-            contract, _ = func.split('::', 1)
-            vars_map = contract_vars.get(contract, {})
-            for call in find_cross_calls(snippet, vars_map):
-                if call not in visited:
-                    stack.append(call)
-
-            libs = contract_usings.get(contract, set())
-            for call in find_using_calls(snippet, libs, library_funcs):
-                if call not in visited:
-                    stack.append(call)
+        trace_txt = run(['surya', 'ftrace', args.entry, 'all', str(flat)])
+        funcs = parse_ftrace(trace_txt)
 
         print(f"\n== Call Trace for {args.entry} ==\n")
         for f in funcs:
