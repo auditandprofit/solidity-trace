@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
 
 def run(cmd):
@@ -50,13 +50,22 @@ def extract_contract_body(src: str, contract: str, offsets: dict) -> Optional[st
 
 
 
-def extract_snippet(src: str, func: str, offsets: dict) -> Optional[str]:
-    """Return the Solidity code for `func` from `src` using byte offsets."""
+def _slice_by_lines(src: str, start: int, length: int) -> Tuple[str, int]:
+    """Return the snippet and its first line number (1-based)."""
+    first_line = src[:start].count("\n") + 1
+    snippet = src[start : start + length]
+    return snippet, first_line
+
+
+def extract_snippet(
+    src: str, func: str, offsets: dict
+) -> Optional[Tuple[str, int]]:
+    """Return (snippet, first_line) for `func`, or None if unavailable."""
     off = offsets.get(func)
     if not off:
         return None
     start, length = map(int, off)
-    return src[start:start + length]
+    return _slice_by_lines(src, start, length)
 
 
 def main():
@@ -115,10 +124,11 @@ def main():
 
         print(f"\n== Call Trace for {args.entry} ==\n")
         for f in funcs:
-            snippet = extract_snippet(src_text, f, offsets)
+            res = extract_snippet(src_text, f, offsets)
             print(f'### {f}')
-            if snippet:
-                print(snippet)
+            if res:
+                snippet, line_no = res
+                print(f'// L{line_no}\n{snippet}')
             else:
                 print('[source not found]')
             print()
