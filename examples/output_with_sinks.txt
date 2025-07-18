@@ -1,0 +1,17 @@
+== Call Trace for Token::withdraw ==
+
+### Token::withdraw
+// L13
+function withdraw(uint amount) external {
+    require(balances[msg.sender] >= amount, "insufficient");
+    balances[msg.sender] = balances[msg.sender].decrement(amount);
+    _transfer(msg.sender, amount);
+}
+
+### \xF0\x9F\x94\xBB ValueTx sink in Token::withdraw
+// L20
+payable(msg.sender).transfer(amount);
+
+### Token::_transfer
+// L18
+payable(to).transfer(amount);

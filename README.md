@@ -32,3 +32,8 @@ The script prints the chain of calls starting from the given entry point and
 shows the source for each function that it encounters. Calls added through
 `using` library directives are also followed, so library functions invoked as
 extensions of built-in types will appear in the trace.
+
+By default the trace also highlights low level calls and value transfer
+sinks (e.g. `transfer`, `selfdestruct`, `call{value: ...}`). Use the
+`--no-sinks` flag to suppress this extra information if a compact output
+is desired.
