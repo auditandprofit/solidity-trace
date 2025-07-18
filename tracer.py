@@ -194,6 +194,14 @@ def main():
                 continue
             library_funcs[lname] = parse_library_funcs(body)
 
+        # build a map of caller->callees from a single Surya run
+        graph_json = json.loads(run(['surya', 'graph', '--json', str(flat)]))
+        edges: Dict[str, Set[str]] = {}
+        for edge in graph_json.get('calls', []):
+            caller = f"{edge['from']['contract']}::{edge['from']['name']}"
+            callee = f"{edge['to']['contract']}::{edge['to']['name']}"
+            edges.setdefault(caller, set()).add(callee)
+
         visited = set()
         stack = [args.entry]
         funcs = []
@@ -205,13 +213,10 @@ def main():
             visited.add(func)
             funcs.append(func)
 
-            try:
-                trace = run(['surya', 'ftrace', func, 'all', *args.files])
-            except subprocess.CalledProcessError:
-                trace = ''
-            for f in parse_ftrace(trace):
-                if f not in visited:
-                    stack.append(f)
+            # follow Surya-derived call edges first
+            for nxt in edges.get(func, ()):
+                if nxt not in visited:
+                    stack.append(nxt)
 
             snippet = extract_snippet(src_text, func, offsets)
             if not snippet:
