@@ -16,7 +16,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from collections import defaultdict
+from typing import Optional, Dict, Tuple, List
+import re
 
 
 def run(cmd):
@@ -68,6 +70,41 @@ def extract_snippet(
     return _slice_by_lines(src, start, length)
 
 
+def collect_sinks(src: str, offsets: Dict[str, Tuple[int, int]]) -> Dict[str, List[str]]:
+    """Detect low level calls and value sinks using regex heuristics."""
+    patterns = {
+        'call': re.compile(r'\.call\s*\('),
+        'delegatecall': re.compile(r'\.delegatecall\s*\('),
+        'staticcall': re.compile(r'\.staticcall\s*\('),
+        'callcode': re.compile(r'\.callcode\s*\('),
+        'transfer': re.compile(r'\.transfer\s*\('),
+        'send': re.compile(r'\.send\s*\('),
+        'selfdestruct': re.compile(r'\bselfdestruct\s*\('),
+        'callvalue': re.compile(r'\.call\s*\{[^}]*value\s*:'),
+    }
+
+    func_index: Dict[str, List[str]] = defaultdict(list)
+
+    for typ, regex in patterns.items():
+        for m in regex.finditer(src):
+            start = m.start()
+            end = src.find(';', start)
+            if end == -1:
+                end = start + len(m.group(0))
+            else:
+                end += 1
+            for fn, (fs, fl) in offsets.items():
+                if fn.endswith('::'):
+                    continue
+                if fs <= start < fs + fl:
+                    key = f"{fn}::SINK::{typ}::{len(func_index[fn])}"
+                    offsets[key] = (start, end - start)
+                    func_index[fn].append(key)
+                    break
+
+    return func_index
+
+
 def main():
     description = (
         "Print the call chain for a Solidity function and show the source "
@@ -94,6 +131,11 @@ def main():
         metavar='files',
         help='Solidity source files',
     )
+    ap.add_argument(
+        '--no-sinks',
+        action='store_true',
+        help='Do not detect or print value transfer sinks',
+    )
     args = ap.parse_args()
 
     for bin_ in ('surya',):
@@ -117,6 +159,10 @@ def main():
                 fs, fl, _ = map(int, f['src'].split(':'))
                 offsets[f"{c['name']}::{f['name']}"] = (fs, fl)
 
+        sink_index: Dict[str, List[str]] = {}
+        if not args.no_sinks:
+            sink_index = collect_sinks(src_text, offsets)
+
         trace = json.loads(
             run(['surya', 'ftrace', '--json', args.entry, 'all', str(flat)])
         )
@@ -131,6 +177,14 @@ def main():
                 print(f'// L{line_no}\n{snippet}')
             else:
                 print('[source not found]')
+
+            if not args.no_sinks:
+                for skey in sink_index.get(f, []):
+                    sres = extract_snippet(src_text, skey, offsets)
+                    if sres:
+                        ssnip, sline = sres
+                        print("### \ud83d\udd3b ValueTx sink in " + f)
+                        print(f"// L{sline}\n{ssnip}")
             print()
 
 if __name__ == '__main__':
