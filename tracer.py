@@ -11,6 +11,7 @@ Example:
 Surya must be installed and available in ``PATH``.
 """
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -40,25 +41,18 @@ def parse_ftrace(text):
     return functions
 
 
-def extract_contract_body(src: str, contract: str) -> Optional[str]:
-    """Return the full body of a contract or library."""
-    c_pat = re.compile(
-        r"(contract|library)\s+" + re.escape(contract) + r"\b[^\{]*\{",
-        re.MULTILINE,
-    )
-    m_contract = c_pat.search(src)
-    if not m_contract:
+def extract_contract_body(src: str, contract: str, offsets: dict) -> Optional[str]:
+    """Return the full body of a contract or library using byte offsets."""
+    off = offsets.get(contract + "::")
+    if not off:
         return None
-    c_start = m_contract.end()
-    idx = c_start
-    depth = 1
-    while idx < len(src) and depth > 0:
-        if src[idx] == '{':
-            depth += 1
-        elif src[idx] == '}':
-            depth -= 1
-        idx += 1
-    return src[c_start : idx - 1]
+    start, length = map(int, off)
+    snippet = src[start:start + length]
+    first = snippet.find("{")
+    last = snippet.rfind("}")
+    if first == -1 or last == -1:
+        return None
+    return snippet[first + 1:last]
 
 
 def parse_contract_vars(body: str, contract_names) -> dict:
@@ -119,47 +113,13 @@ def find_using_calls(snippet: str, libs: Iterable[str], lib_funcs: Dict[str, Lis
     return calls
 
 
-def extract_snippet(src: str, func: str) -> Optional[str]:
-    """Return the Solidity code for `func` from `src`.
-
-    This performs a very small amount of parsing by locating the contract
-    definition first and then searching for the function inside that block.
-    """
-    contract, name = func.split("::", 1)
-
-    # Find contract or library body
-    c_pat = re.compile(r"(contract|library)\s+" + re.escape(contract) + r"\b[^\{]*\{",
-                       re.MULTILINE)
-    m_contract = c_pat.search(src)
-    if not m_contract:
+def extract_snippet(src: str, func: str, offsets: dict) -> Optional[str]:
+    """Return the Solidity code for `func` from `src` using byte offsets."""
+    off = offsets.get(func)
+    if not off:
         return None
-    c_start = m_contract.end()
-    idx = c_start
-    depth = 1
-    while idx < len(src) and depth > 0:
-        if src[idx] == '{':
-            depth += 1
-        elif src[idx] == '}':
-            depth -= 1
-        idx += 1
-    contract_body = src[c_start:idx-1]
-
-    # Now search for the function within the contract body
-    f_pat = re.compile(r"function\s+" + re.escape(name) + r"\b[^\{]*\{",
-                       re.MULTILINE)
-    m_func = f_pat.search(contract_body)
-    if not m_func:
-        return None
-    f_start = m_func.start()
-    idx2 = m_func.end()
-    depth = 1
-    while idx2 < len(contract_body) and depth > 0:
-        if contract_body[idx2] == '{':
-            depth += 1
-        elif contract_body[idx2] == '}':
-            depth -= 1
-        idx2 += 1
-    return contract_body[f_start:idx2]
+    start, length = map(int, off)
+    return src[start:start + length]
 
 
 def main():
@@ -199,6 +159,18 @@ def main():
         flat.write_text(run(['surya', 'flatten', *args.files]))
         src_text = flat.read_text()
 
+        describe = json.loads(run(['surya', 'describe', '--json', str(flat)]))
+        offsets: Dict[str, tuple] = {}
+        for c in describe.get('contracts', []):
+            if 'src' in c:
+                start, length, _ = c['src'].split(':')
+                offsets[c['name'] + '::'] = (start, length)
+            for f in c.get('functions', []):
+                if 'src' not in f:
+                    continue
+                fs, fl, _ = f['src'].split(':')
+                offsets[f"{c['name']}::{f['name']}"] = (fs, fl)
+
         # gather contract and library names separately
         contract_names = re.findall(r"\bcontract\s+(\w+)", src_text)
         library_names = re.findall(r"\blibrary\s+(\w+)", src_text)
@@ -208,7 +180,7 @@ def main():
         contract_vars: Dict[str, Dict[str, str]] = {}
         contract_usings: Dict[str, Set[str]] = {}
         for cname in contract_names:
-            body = extract_contract_body(src_text, cname)
+            body = extract_contract_body(src_text, cname, offsets)
             if body is None:
                 continue
             contract_vars[cname] = parse_contract_vars(body, all_names)
@@ -217,7 +189,7 @@ def main():
         # library function lists
         library_funcs: Dict[str, List[str]] = {}
         for lname in library_names:
-            body = extract_contract_body(src_text, lname)
+            body = extract_contract_body(src_text, lname, offsets)
             if body is None:
                 continue
             library_funcs[lname] = parse_library_funcs(body)
@@ -241,7 +213,7 @@ def main():
                 if f not in visited:
                     stack.append(f)
 
-            snippet = extract_snippet(src_text, func)
+            snippet = extract_snippet(src_text, func, offsets)
             if not snippet:
                 continue
             contract, _ = func.split('::', 1)
@@ -257,7 +229,7 @@ def main():
 
         print(f"\n== Call Trace for {args.entry} ==\n")
         for f in funcs:
-            snippet = extract_snippet(src_text, f)
+            snippet = extract_snippet(src_text, f, offsets)
             print(f'### {f}')
             if snippet:
                 print(snippet)
