@@ -31,7 +31,7 @@ def extract_contract_body(src: str, contract: str, offsets: dict) -> Optional[st
     off = offsets.get(contract + "::")
     if not off:
         return None
-    start, length = map(int, off)
+    start, length = off
     snippet = src[start:start + length]
     first = snippet.find("{")
     last = snippet.rfind("}")
@@ -64,7 +64,7 @@ def extract_snippet(
     off = offsets.get(func)
     if not off:
         return None
-    start, length = map(int, off)
+    start, length = off
     return _slice_by_lines(src, start, length)
 
 
@@ -106,15 +106,15 @@ def main():
         src_text = flat.read_text()
 
         describe = json.loads(run(['surya', 'describe', '--json', str(flat)]))
-        offsets: Dict[str, tuple] = {}
+        offsets: Dict[str, Tuple[int, int]] = {}
         for c in describe.get('contracts', []):
             if 'src' in c:
-                start, length, _ = c['src'].split(':')
+                start, length, _ = map(int, c['src'].split(':'))
                 offsets[c['name'] + '::'] = (start, length)
             for f in c.get('functions', []):
                 if 'src' not in f:
                     continue
-                fs, fl, _ = f['src'].split(':')
+                fs, fl, _ = map(int, f['src'].split(':'))
                 offsets[f"{c['name']}::{f['name']}"] = (fs, fl)
 
         trace = json.loads(
