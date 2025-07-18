@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Trace Solidity call chains with source snippets.
 
-This script uses Surya's `ftrace` command to obtain a call trace starting
-from a given `CONTRACT::FUNCTION` and prints each function in the chain
-together with the Solidity source code.
+This script uses Surya's `ftrace` command with `--json` to obtain a call trace
+starting from a given `CONTRACT::FUNCTION` and prints each function in the
+chain together with the Solidity source code.
 
 Example:
     python tracer.py Token::withdraw examples/contracts/*.sol
@@ -12,7 +12,6 @@ Surya must be installed and available in ``PATH``.
 """
 import argparse
 import json
-import re
 import shutil
 import subprocess
 import tempfile
@@ -25,20 +24,6 @@ def run(cmd):
     return res.stdout
 
 
-def parse_ftrace(text):
-    ansi = re.compile(r"\x1b\[[0-9;]*m")
-    functions = []
-    tree_prefix = re.compile(r'^[\s│├└─]+')
-    for line in text.splitlines():
-        line = ansi.sub('', line)
-        line = tree_prefix.sub('', line)
-        if not line:
-            continue
-        if '::' not in line:
-            continue
-        func = line.split()[0]
-        functions.append(func)
-    return functions
 
 
 def extract_contract_body(src: str, contract: str, offsets: dict) -> Optional[str]:
@@ -123,8 +108,10 @@ def main():
                 fs, fl, _ = f['src'].split(':')
                 offsets[f"{c['name']}::{f['name']}"] = (fs, fl)
 
-        trace_txt = run(['surya', 'ftrace', args.entry, 'all', str(flat)])
-        funcs = parse_ftrace(trace_txt)
+        trace = json.loads(
+            run(['surya', 'ftrace', '--json', args.entry, 'all', str(flat)])
+        )
+        funcs = trace['trace']
 
         print(f"\n== Call Trace for {args.entry} ==\n")
         for f in funcs:
